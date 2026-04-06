@@ -86,6 +86,11 @@ die horribly;
 #define LEX_AT 0
 #endif
 
+#ifndef LEX_BANG
+/* Some targets use ! inside or at the start of symbol names.  */
+#define LEX_BANG 0
+#endif
+
 #ifndef LEX_BR
 /* The RS/6000 assembler uses {,},[,] as parts of symbol names.  */
 #define LEX_BR 0
@@ -120,7 +125,7 @@ die horribly;
 char lex_type[256] = {
   0x20, 0, 0, 0, 0, 0, 0, 0, 0, 8, 0x20, 0, 0, LEX_CR, 0, 0, /* @ABCDEFGHIJKLMNO */
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,	/* PQRSTUVWXYZ[\]^_ */
-  8, 0, 0, LEX_HASH, LEX_DOLLAR, LEX_PCT, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, /* _!"#$%&'()*+,-./ */
+  8, LEX_BANG, 0, LEX_HASH, LEX_DOLLAR, LEX_PCT, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, /* _!"#$%&'()*+,-./ */
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, LEX_QM,	/* 0123456789:;<=>? */
   LEX_AT, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,	/* @ABCDEFGHIJKLMNO */
   3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, LEX_BR, 0, LEX_BR, 0, 3, /* PQRSTUVWXYZ[\]^_ */

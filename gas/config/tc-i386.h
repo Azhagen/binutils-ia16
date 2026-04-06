@@ -78,6 +78,8 @@ extern unsigned long i386_mach (void);
 #define ELF_TARGET_FORMAT32	"elf32-x86-64"
 #endif
 
+#define LEX_BANG (LEX_BEGIN_NAME | LEX_NAME)
+
 #ifndef ELF_TARGET_IAMCU_FORMAT
 #define ELF_TARGET_IAMCU_FORMAT	"elf32-iamcu"
 #endif
@@ -144,6 +146,12 @@ extern int tc_i386_fix_adjustable (struct fix *);
 #define md_undefined_symbol(N) ((void)(N), NULL)
 #endif
 
+extern void i386_frob_label (symbolS *);
+#define tc_frob_label(S) i386_frob_label (S)
+
+extern void i386_frob_symbol (symbolS *, int *);
+#define tc_frob_symbol(S, P) i386_frob_symbol ((S), &(P))
+
 /* Values passed to md_apply_fix don't include the symbol value.  */
 #define MD_APPLY_SYM_VALUE(FIX) 0
 
@@ -163,6 +171,11 @@ extern int tc_i386_fix_adjustable (struct fix *);
 
 #define TC_FORCE_RELOCATION_LOCAL(FIX)				\
   (GENERIC_FORCE_RELOCATION_LOCAL (FIX)				\
+  || ((FIX)->fx_r_type == BFD_RELOC_16 && (FIX)->fx_unused)	\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SEG16			\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SUB16			\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SUB32			\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SEGRELATIVE		\
    || (FIX)->fx_r_type == BFD_RELOC_386_PLT32			\
    || (FIX)->fx_r_type == BFD_RELOC_386_GOTPC			\
    || (FIX)->fx_r_type == BFD_RELOC_X86_64_GOTPCREL		\
@@ -174,6 +187,11 @@ extern int tc_i386_fix_adjustable (struct fix *);
 
 #define TC_FORCE_RELOCATION_ABS(FIX)				\
   (TC_FORCE_RELOCATION (FIX)					\
+  || ((FIX)->fx_r_type == BFD_RELOC_16 && (FIX)->fx_unused)	\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SEG16			\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SUB16			\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SUB32			\
+  || (FIX)->fx_r_type == BFD_RELOC_386_SEGRELATIVE		\
    || (FIX)->fx_r_type == BFD_RELOC_386_GOT32			\
    || (FIX)->fx_r_type == BFD_RELOC_386_GOT32X			\
    || (FIX)->fx_r_type == BFD_RELOC_X86_64_GOTPCREL		\

@@ -782,6 +782,8 @@ if [gas_32_check] then {
 
 	run_dump_test "got"
 	run_dump_test "got-no-relax"
+    run_dump_test "segelf-far-init-1"
+    run_dump_test "segelf-huge-1"
 
 	run_dump_test "no-got"
 

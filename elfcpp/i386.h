@@ -87,6 +87,10 @@ enum
                             // to argument, returning TLS offset for symbol
   R_386_IRELATIVE = 42,     // Adjust indirectly by program base
   R_386_GOT32X = 43,        // 32 bit GOT entry, relaxable
+  R_386_SEG16 = 45,         // Segmented preferred segment value
+  R_386_SUB16 = 46,         // Segmented 16-bit subtractive relocation
+  R_386_SUB32 = 47,         // Segmented 32-bit subtractive relocation
+  R_386_SEGRELATIVE = 48,   // Segmented preferred segment, runtime-relative
   // Used by Intel.
   R_386_USED_BY_INTEL_200 = 200,
   // GNU vtable garbage collection extensions.

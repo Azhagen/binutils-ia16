@@ -559,7 +559,7 @@ static const unsigned char i386_seg_prefixes[] = {
 
 /* List of chars besides those in app.c:symbol_chars that can start an
    operand.  Used to prevent the scrubber eating vital white-space.  */
-const char extra_symbol_chars[] = "*%-(["
+const char extra_symbol_chars[] = "!*%-(["
 #ifdef LEX_AT
 	"@"
 #endif
@@ -1368,6 +1368,274 @@ static htab_t op_hash;
 /* Hash table for register lookup.  */
 static htab_t reg_hash;
 
+enum
+{
+  IA16_SEGELF_NONE = 0,
+  IA16_SEGELF_OFF,
+  IA16_SEGELF_SEG
+};
+
+static void
+ia16_segelf_keep_symbol (symbolS *sym)
+{
+  if (sym == NULL)
+    return;
+
+  symbol_get_bfdsym (sym)->flags |= BSF_KEEP;
+  symbol_mark_used_in_reloc (sym);
+}
+
+static bool
+ia16_segelf_huge_section_p (segT sec)
+{
+  const char *name;
+
+  if (sec == NULL)
+    return false;
+
+  name = segment_name (sec);
+  return name != NULL && strstr (name, ".huge") != NULL;
+}
+
+static void
+ia16_segelf_copy_aux_symbol_attributes (symbolS *aux, symbolS *sym)
+{
+  ia16_segelf_keep_symbol (aux);
+  copy_symbol_attributes (aux, sym);
+
+  symbol_get_bfdsym (aux)->flags &= ~BSF_WEAK;
+  if (S_IS_WEAK (sym))
+    S_SET_WEAK (aux);
+  else if (S_IS_EXTERNAL (sym))
+    S_SET_EXTERNAL (aux);
+  else
+    S_CLEAR_EXTERNAL (aux);
+}
+
+/* Return the frag containing section-relative OFFSET within SEC, along with
+   the corresponding offset relative to that frag.  */
+static fragS *
+ia16_segelf_frag_for_offset (segT sec, valueT offset, valueT *frag_offset)
+{
+  segment_info_type *seginfo;
+  fragS *frag;
+
+  seginfo = seg_info (sec);
+  if (seginfo == NULL || seginfo->frchainP == NULL)
+    return NULL;
+
+  for (frag = seginfo->frchainP->frch_root; frag != NULL; frag = frag->fr_next)
+    {
+      fragS *next = frag->fr_next;
+      valueT frag_base = frag->fr_address / OCTETS_PER_BYTE;
+
+      if (next == NULL || offset < next->fr_address / OCTETS_PER_BYTE)
+        {
+          *frag_offset = offset - frag_base;
+          return frag;
+        }
+    }
+
+  return NULL;
+}
+
+/* HUGE symbols need per-symbol paragraph bases, not the section base used
+   for ordinary segmented sections.  Once SYM has a resolved section-relative
+   value, rewrite AUX as a normal symbol within the same section at
+   floor (SYM / 16) * 16.  */
+static void
+ia16_segelf_define_huge_aux_symbol (symbolS *aux, symbolS *sym)
+{
+  valueT aux_value;
+  valueT frag_offset;
+  fragS *frag;
+
+  ia16_segelf_copy_aux_symbol_attributes (aux, sym);
+
+  aux_value = S_GET_VALUE (sym) & ~(valueT) 15;
+  frag = ia16_segelf_frag_for_offset (S_GET_SEGMENT (sym), aux_value,
+                                      &frag_offset);
+  if (frag == NULL)
+    return;
+
+  S_SET_SEGMENT (aux, S_GET_SEGMENT (sym));
+  symbol_set_frag (aux, frag);
+  S_SET_VALUE (aux, frag_offset);
+}
+
+static void
+ia16_segelf_define_aux_symbol (symbolS *aux, symbolS *sym)
+{
+  symbolS *base;
+
+  if (aux == NULL || sym == NULL || !S_IS_DEFINED (sym))
+    return;
+
+  if (ia16_segelf_huge_section_p (S_GET_SEGMENT (sym))
+      && symbol_resolved_p (sym))
+    {
+      ia16_segelf_define_huge_aux_symbol (aux, sym);
+      return;
+    }
+
+  base = section_symbol (S_GET_SEGMENT (sym));
+  if (base == NULL)
+    return;
+
+  ia16_segelf_copy_aux_symbol_attributes (aux, sym);
+  S_SET_SEGMENT (aux, S_GET_SEGMENT (base));
+  S_SET_VALUE (aux, S_GET_VALUE (base));
+  symbol_set_frag (aux, symbol_get_frag (base));
+}
+
+static symbolS *
+ia16_segelf_aux_symbol (symbolS *sym)
+{
+  const char *name;
+  symbolS *aux;
+
+  if (sym == NULL)
+    return NULL;
+
+  name = S_GET_NAME (sym);
+  if (name == NULL)
+    return NULL;
+
+  if (name[0] != '\0' && name[strlen (name) - 1] == '!')
+    return sym;
+
+  aux = symbol_find_or_make (notes_concat (name, "!", NULL));
+  ia16_segelf_keep_symbol (aux);
+
+  if (!S_IS_DEFINED (aux))
+    {
+      if (S_IS_DEFINED (sym))
+	ia16_segelf_define_aux_symbol (aux, sym);
+      else
+	{
+	  if (S_IS_WEAK (sym))
+	    S_SET_WEAK (aux);
+	  else
+	    S_SET_EXTERNAL (aux);
+	}
+    }
+
+  return aux;
+}
+
+static void
+ia16_segelf_sync_aux_symbol (symbolS *sym)
+{
+  const char *name;
+  symbolS *aux;
+
+  if (!IS_ELF || sym == NULL)
+    return;
+
+  name = S_GET_NAME (sym);
+  if (name == NULL || name[0] == '\0' || name[strlen (name) - 1] == '!')
+    return;
+
+  aux = symbol_find (notes_concat (name, "!", NULL));
+  if (aux == NULL)
+    return;
+
+  ia16_segelf_keep_symbol (aux);
+
+  if (S_IS_DEFINED (sym))
+    ia16_segelf_define_aux_symbol (aux, sym);
+  else if (S_IS_WEAK (sym))
+    S_SET_WEAK (aux);
+  else if (S_IS_EXTERNAL (sym))
+    S_SET_EXTERNAL (aux);
+}
+
+void
+i386_frob_label (symbolS *sym)
+{
+  symbolS *aux;
+  const char *name;
+
+  if (!IS_ELF || sym == NULL || !S_IS_DEFINED (sym))
+    return;
+
+  name = S_GET_NAME (sym);
+  if (name == NULL || name[0] == '\0' || name[strlen (name) - 1] == '!')
+    return;
+
+  aux = symbol_find_or_make (notes_concat (name, "!", NULL));
+  ia16_segelf_define_aux_symbol (aux, sym);
+}
+
+void
+i386_frob_symbol (symbolS *sym, int *punt ATTRIBUTE_UNUSED)
+{
+  ia16_segelf_sync_aux_symbol (sym);
+}
+
+static void
+ia16_segelf_mark_expression (expressionS *exp,
+			     enum bfd_reloc_code_real reloc)
+{
+  if (exp == NULL)
+    return;
+
+  if (reloc == BFD_RELOC_16)
+    exp->X_md = IA16_SEGELF_OFF;
+  else if (reloc == BFD_RELOC_386_SEG16)
+    exp->X_md = IA16_SEGELF_SEG;
+  else
+    exp->X_md = IA16_SEGELF_NONE;
+}
+
+static void
+ia16_segelf_prepare_expression (expressionS *exp)
+{
+  if (exp == NULL)
+    return;
+
+  if (exp->X_md == IA16_SEGELF_SEG)
+    {
+      exp->X_add_symbol = ia16_segelf_aux_symbol (exp->X_add_symbol);
+      if (exp->X_op == O_subtract)
+	exp->X_op_symbol = ia16_segelf_aux_symbol (exp->X_op_symbol);
+      exp->X_add_number = 0;
+    }
+}
+
+static void
+ia16_segelf_finish_fixup (fixS *fixP, const expressionS *exp)
+{
+  fixS *sub_fix;
+
+  if (fixP == NULL || exp == NULL || exp->X_md != IA16_SEGELF_OFF)
+    return;
+
+  if (fixP->fx_addsy == NULL)
+    return;
+
+  fixP->fx_unused = 1;
+
+  sub_fix = (fixS *) notes_memdup (fixP, sizeof (*fixP), sizeof (*fixP));
+  sub_fix->fx_next = fixP->fx_next;
+  sub_fix->fx_unused = 0;
+  sub_fix->fx_size = fixP->fx_size;
+  sub_fix->fx_addsy = ia16_segelf_aux_symbol (fixP->fx_addsy);
+  sub_fix->fx_subsy = NULL;
+  sub_fix->fx_offset = 0;
+  sub_fix->fx_r_type = BFD_RELOC_386_SUB16;
+  fixP->fx_next = sub_fix;
+
+  /* If FIXP was the active tail, preserve the chained SUB16 fixup when
+     later fixups are appended to this section.  */
+  if (frchain_now != NULL && frchain_now->fix_tail == fixP)
+    frchain_now->fix_tail = sub_fix;
+
+  if (now_seg != NULL && seg_info (now_seg) != NULL
+      && seg_info (now_seg)->fix_tail == fixP)
+    seg_info (now_seg)->fix_tail = sub_fix;
+}
+
 #if (defined (OBJ_ELF) || defined (OBJ_MACH_O) || defined (TE_PE))
 static const struct
 {
@@ -1387,6 +1655,8 @@ gotrel[] =
       { .imm32 = 1, .imm32s = 1, .imm64 = 1, .disp32 = 1, .disp64 = 1 } }
 #define OPERAND_TYPE_IMM64_DISP64 { .bitfield = \
       { .imm64 = 1, .disp64 = 1 } }
+#define OPERAND_TYPE_IMM16_DISP16 { .bitfield = \
+      { .imm16 = 1, .disp16 = 1 } }
 
 #ifndef TE_PE
 #ifdef OBJ_ELF
@@ -1406,6 +1676,12 @@ gotrel[] =
     { STRING_COMMA_LEN ("GOTOFF"),   { BFD_RELOC_386_GOTOFF,
 				       BFD_RELOC_X86_64_GOTOFF64 },
     OPERAND_TYPE_IMM64_DISP64, true },
+    { STRING_COMMA_LEN ("OFF"),      { BFD_RELOC_16,
+  				       _dummy_first_bfd_reloc_code_real },
+    OPERAND_TYPE_IMM16_DISP16, false },
+    { STRING_COMMA_LEN ("SEG"),      { BFD_RELOC_386_SEG16,
+  				       _dummy_first_bfd_reloc_code_real },
+    OPERAND_TYPE_IMM16_DISP16, false },
     { STRING_COMMA_LEN ("GOTPCREL"), { _dummy_first_bfd_reloc_code_real,
 				       BFD_RELOC_X86_64_GOTPCREL },
     OPERAND_TYPE_IMM32_32S_DISP32, true },
@@ -1464,6 +1740,7 @@ gotrel[] =
 #undef OPERAND_TYPE_IMM32_32S_64_DISP32
 #undef OPERAND_TYPE_IMM32_32S_64_DISP32_64
 #undef OPERAND_TYPE_IMM64_DISP64
+#undef OPERAND_TYPE_IMM16_DISP16
 };
 #endif
 
@@ -4089,6 +4366,9 @@ tc_i386_fix_adjustable (fixS *fixP)
       && fixP->fx_pcrel)
     return 0;
 
+  if (fixP->fx_r_type == BFD_RELOC_16 && fixP->fx_unused)
+    return 0;
+
   /* The x86_64 GOTPCREL are represented as 32bit PCrel relocations
      and changed later by validate_fix.  */
   if (GOT_symbol && fixP->fx_subsy == GOT_symbol
@@ -4099,6 +4379,10 @@ tc_i386_fix_adjustable (fixS *fixP)
      for size relocations.  */
   if (fixP->fx_r_type == BFD_RELOC_SIZE32
       || fixP->fx_r_type == BFD_RELOC_SIZE64
+      || fixP->fx_r_type == BFD_RELOC_386_SEG16
+      || fixP->fx_r_type == BFD_RELOC_386_SUB16
+      || fixP->fx_r_type == BFD_RELOC_386_SUB32
+      || fixP->fx_r_type == BFD_RELOC_386_SEGRELATIVE
       || fixP->fx_r_type == BFD_RELOC_386_GOTOFF
       || fixP->fx_r_type == BFD_RELOC_386_GOT32
       || fixP->fx_r_type == BFD_RELOC_386_GOT32X
@@ -11880,8 +12164,10 @@ output_jump (void)
 
   jump_reloc = reloc (size, 1, 1, jump_reloc);
 
+  ia16_segelf_prepare_expression (i.op[0].disps);
   fixP = fix_new_exp (frag_now, p - frag_now->fr_literal, size,
 		      i.op[0].disps, 1, jump_reloc);
+  ia16_segelf_finish_fixup (fixP, i.op[0].disps);
 
   /* All jumps handled here are signed, but don't unconditionally use a
      signed limit check for 32 and 16 bit jumps as we want to allow wrap
@@ -13121,9 +13407,12 @@ output_disp (fragS *insn_start_frag, offsetT insn_start_off)
 		      break;
 		    }
 		}
-	      fixP = fix_new_exp (frag_now, p - frag_now->fr_literal,
-				  size, i.op[n].disps, pcrel,
-				  reloc_type);
+
+        ia16_segelf_prepare_expression (i.op[n].disps);
+        fixP = fix_new_exp (frag_now, p - frag_now->fr_literal,
+           size, i.op[n].disps, pcrel,
+           reloc_type);
+        ia16_segelf_finish_fixup (fixP, i.op[n].disps);
 
 	      if (flag_code == CODE_64BIT && size == 4 && pcrel
 		  && !i.prefix[ADDR_PREFIX])
@@ -13248,6 +13537,7 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
 		 sizes ...  */
 	      enum bfd_reloc_code_real reloc_type;
 	      int sign;
+        fixS *fixP;
 
 	      if (i.types[n].bitfield.imm32s
 		  && (i.suffix == QWORD_MNEM_SUFFIX
@@ -13324,8 +13614,11 @@ output_imm (fragS *insn_start_frag, offsetT insn_start_off)
 		  i.op[n].imms->X_add_number +=
 		    encoding_length (insn_start_frag, insn_start_off, p);
 		}
-	      fix_new_exp (frag_now, p - frag_now->fr_literal, size,
-			   i.op[n].imms, 0, reloc_type);
+
+        ia16_segelf_prepare_expression (i.op[n].imms);
+        fixP = fix_new_exp (frag_now, p - frag_now->fr_literal, size,
+           i.op[n].imms, 0, reloc_type);
+        ia16_segelf_finish_fixup (fixP, i.op[n].imms);
 	    }
 	}
     }
@@ -13339,6 +13632,8 @@ void
 x86_cons_fix_new (fragS *frag, unsigned int off, unsigned int len,
 		  expressionS *exp, bfd_reloc_code_real_type r)
 {
+  fixS *fixP;
+
   r = reloc (len, 0, cons_sign, r);
 
 #ifdef TE_PE
@@ -13351,7 +13646,9 @@ x86_cons_fix_new (fragS *frag, unsigned int off, unsigned int len,
     r = BFD_RELOC_16_SECIDX;
 #endif
 
-  fix_new_exp (frag, off, len, exp, 0, r);
+  ia16_segelf_prepare_expression (exp);
+  fixP = fix_new_exp (frag, off, len, exp, 0, r);
+  ia16_segelf_finish_fixup (fixP, exp);
 }
 
 /* Export the ABI address size for use by TC_ADDRESS_BYTES for the
@@ -13473,6 +13770,9 @@ x86_cons (expressionS *exp, int size)
 
 #if defined (OBJ_ELF) || defined (TE_PE)
   if (size == 4
+# ifdef OBJ_ELF
+  || (size == 2)
+# endif
 # ifdef TE_PE
       || (size == 2)
 # endif
@@ -13534,6 +13834,8 @@ x86_cons (expressionS *exp, int size)
   if (size <= 4 && expr_mode == expr_operator_present
       && exp->X_op == O_constant && !object_64bit)
     exp->X_add_number = extend_to_32bit_address (exp->X_add_number);
+
+  ia16_segelf_mark_expression (exp, got_reloc);
 
   return got_reloc;
 }
@@ -14802,6 +15104,8 @@ i386_immediate (char *imm_start)
 	exp->X_op = O_illegal;
     }
 
+  ia16_segelf_mark_expression (exp, i.reloc[this_operand]);
+
   if (exp_seg == reg_section)
     {
       as_bad (_("illegal immediate register operand %s"), imm_start);
@@ -15062,6 +15366,8 @@ i386_displacement (char *disp_start, char *disp_end)
       if (exp->X_op == O_constant || exp->X_op == O_register)
 	exp->X_op = O_illegal;
     }
+
+  ia16_segelf_mark_expression (exp, i.reloc[this_operand]);
 
   ret = i386_finalize_displacement (exp_seg, exp, types, disp_start);
 
@@ -18522,6 +18828,10 @@ tc_gen_reloc (asection *section ATTRIBUTE_UNUSED, fixS *fixp)
     case BFD_RELOC_386_GOT32X:
     case BFD_RELOC_386_GOTOFF:
     case BFD_RELOC_386_GOTPC:
+    case BFD_RELOC_386_SEG16:
+    case BFD_RELOC_386_SUB16:
+    case BFD_RELOC_386_SUB32:
+    case BFD_RELOC_386_SEGRELATIVE:
     case BFD_RELOC_386_TLS_GD:
     case BFD_RELOC_386_TLS_LDM:
     case BFD_RELOC_386_TLS_LDO_32:

@@ -104,6 +104,7 @@ static reloc_howto_type elf_howto_table[]=
 
 #define R_386_ext (R_386_PC8 + 1 - R_386_ext_offset)
 #define R_386_tls_offset (R_386_TLS_LDO_32 - R_386_ext)
+#define R_386_tls (R_386_GOT32X + 1 - R_386_tls_offset)
   /* These are common with Solaris TLS implementation.  */
   HOWTO(R_386_TLS_LDO_32, 0, 4, 32, false, 0, complain_overflow_dont,
 	bfd_elf_generic_reloc, "R_386_TLS_LDO_32",
@@ -141,9 +142,24 @@ static reloc_howto_type elf_howto_table[]=
   HOWTO(R_386_GOT32X, 0, 4, 32, false, 0, complain_overflow_dont,
 	bfd_elf_generic_reloc, "R_386_GOT32X",
 	true, 0xffffffff, 0xffffffff, false),
+  HOWTO(R_386_SEG16, 4, 2, 16, false, 0, complain_overflow_bitfield,
+	bfd_elf_generic_reloc, "R_386_SEG16",
+	true, 0xffff, 0xffff, false),
+  /* A negative size marks the HOWTO as subtractive (howto->negate).  */
+  HOWTO(R_386_SUB16, 0, -2, 16, false, 0, complain_overflow_dont,
+	bfd_elf_generic_reloc, "R_386_SUB16",
+	true, 0xffff, 0xffff, false),
+  HOWTO(R_386_SUB32, 0, -4, 32, false, 0, complain_overflow_dont,
+	bfd_elf_generic_reloc, "R_386_SUB32",
+	true, 0xffffffff, 0xffffffff, false),
+  HOWTO(R_386_SEGRELATIVE, 4, 2, 16, false, 0, complain_overflow_bitfield,
+	bfd_elf_generic_reloc, "R_386_SEGRELATIVE",
+	true, 0xffff, 0xffff, false),
 
-  /* Another gap.  */
-#define R_386_ext2 (R_386_GOT32X + 1 - R_386_tls_offset)
+	/* Another gap: relocation 44 is still unused, so the segelf relocs
+		 need their own compressed table range.  */
+#define R_386_segelf_offset (R_386_SEG16 - R_386_tls)
+#define R_386_ext2 (R_386_SEGRELATIVE + 1 - R_386_segelf_offset)
 #define R_386_vt_offset (R_386_GNU_VTINHERIT - R_386_ext2)
 
 /* GNU extension to record C++ vtable hierarchy.  */
@@ -212,6 +228,22 @@ elf_i386_reloc_type_lookup (bfd *abfd,
     case BFD_RELOC_386_GOT32:
       TRACE ("BFD_RELOC_386_GOT32");
       return &elf_howto_table[R_386_GOT32];
+
+	case BFD_RELOC_386_SEG16:
+	  TRACE ("BFD_RELOC_386_SEG16");
+	  return &elf_howto_table[R_386_SEG16 - R_386_segelf_offset];
+
+	case BFD_RELOC_386_SUB16:
+	  TRACE ("BFD_RELOC_386_SUB16");
+	  return &elf_howto_table[R_386_SUB16 - R_386_segelf_offset];
+
+	case BFD_RELOC_386_SUB32:
+	  TRACE ("BFD_RELOC_386_SUB32");
+	  return &elf_howto_table[R_386_SUB32 - R_386_segelf_offset];
+
+	case BFD_RELOC_386_SEGRELATIVE:
+	  TRACE ("BFD_RELOC_386_SEGRELATIVE");
+	  return &elf_howto_table[R_386_SEGRELATIVE - R_386_segelf_offset];
 
     case BFD_RELOC_386_PLT32:
       TRACE ("BFD_RELOC_386_PLT32");
@@ -372,7 +404,9 @@ elf_i386_rtype_to_howto (unsigned r_type)
       && ((indx = r_type - R_386_ext_offset) - R_386_standard
 	  >= R_386_ext - R_386_standard)
       && ((indx = r_type - R_386_tls_offset) - R_386_ext
-	  >= R_386_ext2 - R_386_ext)
+	  >= R_386_tls - R_386_ext)
+	  && ((indx = r_type - R_386_segelf_offset) - R_386_tls
+	      >= R_386_ext2 - R_386_tls)
       && ((indx = r_type - R_386_vt_offset) - R_386_ext2
 	  >= R_386_vt - R_386_ext2))
       return NULL;
